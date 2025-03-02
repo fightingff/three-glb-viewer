@@ -318,3 +318,19 @@ footer .separator {
     opacity: 0;
   }
 }
+
+/* 进度条样式 */
+.progress-container {
+  transition: opacity 0.3s;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.progress-container:hover {
+  opacity: 0.9;
+  transform: translateX(-50%) scaleY(1.2);
+}
+
+.progress-bar {
+  border-radius: 4px;
+  transition: width 0.05s linear;
+}

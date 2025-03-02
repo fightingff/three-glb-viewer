@@ -20,6 +20,13 @@ import {
 	WebGLRenderer,
 	LinearToneMapping,
 	ACESFilmicToneMapping,
+	VideoTexture,
+	PlaneGeometry,
+	MeshStandardMaterial,
+	LinearFilter,
+	DoubleSide,
+	Mesh,
+	SRGBColorSpace
 } from 'three';
 import Stats from 'three/addons/libs/stats.module.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -75,6 +82,9 @@ export class Viewer {
 			skeleton: false,
 			grid: false,
 			autoRotate: false,
+			isPlaying: true,
+			progress: 0,
+			currentClipIndex: 0,
 
 			// Lights
 			punctualLights: true,
@@ -106,7 +116,7 @@ export class Viewer {
 		this.activeCamera = this.defaultCamera;
 		this.scene.add(this.defaultCamera);
 
-		this.renderer = window.renderer = new WebGLRenderer({ antialias: true });
+		this.renderer = window.renderer = new WebGLRenderer({ antialias: true, alpha: true });
 		this.renderer.setClearColor(0xcccccc);
 		this.renderer.setPixelRatio(window.devicePixelRatio);
 		this.renderer.setSize(el.clientWidth, el.clientHeight);
@@ -131,6 +141,112 @@ export class Viewer {
 		this.gridHelper = null;
 		this.axesHelper = null;
 
+        // 添加自定义进度条
+        this.progressContainer = document.createElement('div');
+		this.progressContainer.style.cssText = `
+			position: absolute;
+			bottom: 5%;
+			width: 100%;
+			height: 2.6%;
+			background-color: #444;
+			border-radius: 4px;
+			overflow: hidden;
+			cursor: pointer;
+		`;
+
+        this.progressBar = document.createElement('div');
+		this.progressBar.style.cssText = `
+			width: 0%;
+			height: 100%;
+			background-color: #00ff88;
+			transition: width 0.1s linear;
+		`;
+
+        this.progressContainer.appendChild(this.progressBar);
+        this.el.appendChild(this.progressContainer);
+
+        // 添加进度条交互事件
+        this.isDragging = false;
+        this.progressContainer.addEventListener('mousedown', (e) => {
+            this.isDragging = true;
+            // this.state.isPlaying = false;
+            this.handleProgressClick(e);
+        });
+
+        this.progressContainer.addEventListener('mousemove', (e) => {
+            if (this.isDragging) this.handleProgressClick(e);
+        });
+
+		this.progressContainer.addEventListener('mouseup', (e) => {
+			if (this.isDragging) {
+				this.isDragging = false;
+				this.state.isPlaying = false;
+				this.handleProgressClick(e);
+				this.clips.forEach(clip => {
+					const action = this.mixer.clipAction(clip);
+					action.paused = true;
+				});
+				this.playButton.innerHTML='<img src="/play.png">';
+				
+			}
+		});
+		
+		// 添加播放控制按钮
+		this.playButton = document.createElement('div');
+		this.playButton.style.cssText=`
+			position: absolute;
+			bottom: 8%;
+			right: 3%;
+			height: 16%;
+			cursor: pointer;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+
+		`;
+
+		this.playButton.innerHTML = '<img src="/play.png">';
+		this.playButton.addEventListener('click', () => {
+			this.togglePlay();
+			this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
+		});
+
+		// 初始化时设置播放按钮状态
+		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
+		
+		this.el.appendChild(this.playButton);
+
+		// 添加视频元素
+		this.videoElement = document.createElement('video');
+		// this.el.insertBefore(this.videoElement, this.el.firstChild);
+
+		// 初始化视频
+		this.videoDuration = 0;
+		this.loadVideo('/video.mp4');
+
+		// 创建视频纹理
+		const videoTexture = new VideoTexture(this.videoElement);
+		videoTexture.minFilter = LinearFilter;
+		videoTexture.magFilter = LinearFilter;
+		videoTexture.colorSpace = SRGBColorSpace
+	
+		// 创建3D平面 21:9
+		const width = 7;
+		const height = 3;
+
+		const geometry = new PlaneGeometry(width, height); // 1920 * 1080
+		const material = new MeshStandardMaterial({
+			map: videoTexture,
+			emissive: 0xffffff,
+			emissiveIntensity: 0,
+			side: DoubleSide
+		});
+
+		this.plane = new Mesh(geometry, material);
+		this.plane.position.set(0, height / 2.0, -1);
+		this.plane.rotation.y = -Math.PI / 6.0;
+		this.scene.add(this.plane);
+
 		this.addAxesHelper();
 		this.addGUI();
 		if (options.kiosk) this.gui.close();
@@ -138,20 +254,69 @@ export class Viewer {
 		this.animate = this.animate.bind(this);
 		requestAnimationFrame(this.animate);
 		window.addEventListener('resize', this.resize.bind(this), false);
+		this.togglePlay();
 	}
+
+	loadVideo(source) {
+		// 监听视频元数据加载
+		this.videoElement.addEventListener('loadedmetadata', () => {
+			this.videoDuration = this.videoElement.duration;
+			console.log(this.videoDuration)
+		});
+
+        this.videoElement.src = source;
+        this.videoElement.style.display = 'block';
+    }
 
 	animate(time) {
 		requestAnimationFrame(this.animate);
-
 		const dt = (time - this.prevTime) / 1000;
-
+		
 		this.controls.update();
 		this.stats.update();
-		this.mixer && this.mixer.update(dt);
-		this.render();
+		
+		if (this.mixer) {
+			// 只在播放时更新动画时间
+			const scaledDelta = this.state.isPlaying ? dt * this.state.playbackSpeed : 0;
+			this.mixer.update(scaledDelta);
+	
+			// 更新进度条显示
+			const activeClip = this.clips[this.state.currentClipIndex];
+			const progress = (this.mixer.time % activeClip.duration) / activeClip.duration;
+			this.progressBar.style.width = `${progress * 100}%`;
 
+			// 更新视频播放进度
+			if (this.videoElement.readyState > 0) {
+				const targetTime = progress * this.videoDuration;
+				if (Math.abs(this.videoElement.currentTime - targetTime) > 0.1) {
+					this.videoElement.currentTime = targetTime;
+				}
+			}
+		}
+
+		this.render();
 		this.prevTime = time;
 	}
+
+    handleProgressClick(e) {
+        const rect = this.progressContainer.getBoundingClientRect();
+        const progress = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        this.seekAnimation(progress);
+    }
+
+    seekAnimation(progress) {
+        const clip = this.clips[this.state.currentClipIndex];
+        const targetTime = progress * clip.duration;
+		// console.log(clip.duration);
+        this.mixer.setTime(targetTime);
+		this.clips.forEach(clip => {
+			const action = this.mixer.clipAction(clip);
+			action.paused = false;
+		});
+
+		// 更新视频画面
+		this.videoElement.currentTime = progress * this.videoDuration;
+    }
 
 	render() {
 		this.renderer.render(this.scene, this.activeCamera);
@@ -254,12 +419,17 @@ export class Viewer {
 
 		this.controls.reset();
 
-		object.position.x -= center.x;
-		object.position.y -= center.y;
-		object.position.z -= center.z;
+
+		// 旋转模型使得人体模型面部朝向z轴正方向
+		object.rotation.y = Math.PI;
+
+		//移动到左下方
+		const Delta = 1;
+		object.position.x -= Delta;
+		object.position.z += Delta;
 
 		this.controls.maxDistance = size * 10;
-
+		this.defaultCamera.position.set(0, 0, size * 2.5);
 		this.defaultCamera.near = size / 100;
 		this.defaultCamera.far = size * 100;
 		this.defaultCamera.updateProjectionMatrix();
@@ -338,6 +508,23 @@ export class Viewer {
 		});
 	}
 
+	// 新增动画控制方法
+	togglePlay() {
+		this.state.isPlaying = !this.state.isPlaying;
+		this.clips.forEach(clip => {
+			const action = this.mixer.clipAction(clip);
+			action.paused = !this.state.isPlaying;
+		});
+		// 控制播放按钮可见性
+		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
+		if (this.state.isPlaying) {
+			this.videoElement.play();
+		}else {
+			this.videoElement.pause();
+		}
+	}
+
+
 	/**
 	 * @param {string} name
 	 */
@@ -411,8 +598,12 @@ export class Viewer {
 
 		this.getCubeMapTexture(environment).then(({ envMap }) => {
 			this.scene.environment = envMap;
-			this.scene.background = this.state.background ? envMap : this.backgroundColor;
+			this.scene.background = this.state.bgColor;
+
+			// 显示视频平面
+			this.plane.visible = this.state.background;
 		});
+			
 	}
 
 	getCubeMapTexture(environment) {
@@ -565,6 +756,7 @@ export class Viewer {
 		// Animation controls.
 		this.animFolder = gui.addFolder('Animation');
 		this.animFolder.domElement.style.display = 'none';
+
 		const playbackSpeedCtrl = this.animFolder.add(this.state, 'playbackSpeed', 0, 1);
 		playbackSpeedCtrl.onChange((speed) => {
 			if (this.mixer) this.mixer.timeScale = speed;

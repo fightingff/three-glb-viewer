@@ -28,12 +28,13 @@ class App {
 		};
 
 		this.el = el;
-		this.viewer = null;
-		this.viewerEl = null;
+		this.viewers = null;
+		this.viewerEls = null;
 		this.spinnerEl = el.querySelector('.spinner');
 		this.dropEl = el.querySelector('.dropzone');
 		this.inputEl = el.querySelector('#file-input');
 		this.validator = new Validator(el);
+		this.activateIndex = null;
 
 		this.createDropzone();
 		this.hideSpinner();
@@ -50,6 +51,14 @@ class App {
 		}
 	}
 
+	activate(index) {
+		if (index === this.activateIndex) return;
+		if (this.activateIndex !== null) {
+			this.viewers[this.activateIndex].deactivate();
+		}
+		this.activateIndex = index;
+		this.viewers[index].activate();
+	}
 	/**
 	 * Sets up the drag-and-drop controller.
 	 */
@@ -64,13 +73,27 @@ class App {
 	 * Sets up the view manager.
 	 * @return {Viewer}
 	 */
-	createViewer() {
-		this.viewerEl = document.createElement('div');
-		this.viewerEl.classList.add('viewer');
-		this.dropEl.innerHTML = '';
-		this.dropEl.appendChild(this.viewerEl);
-		this.viewer = new Viewer(this.viewerEl, this.options);
-		return this.viewer;
+	createViewers(num_keyframes) {
+		// 创建num_keyframes个viewer
+		this.viewerEls = [];
+		this.viewers = [];
+		const keyFrames = [0, 62, 91, 123];
+		for (let i = 0; i < num_keyframes; i++) {
+			const viewerEl = document.createElement('div');
+			viewerEl.style.cssText = `
+				width: ${100 / num_keyframes}%;
+				height: 100%;
+				left: ${100 / num_keyframes * i}%;
+			`;
+			viewerEl.classList.add('viewer');
+			viewerEl.addEventListener('mousedown', () => {
+				this.activate(i);
+			});
+			this.dropEl.appendChild(viewerEl);
+			this.viewerEls.push(viewerEl);
+			this.viewers.push(new Viewer(viewerEl, this.options, keyFrames[i], keyFrames[i + 1], i + 1));
+		}
+		return this.viewers;
 	}
 
 	/**
@@ -103,7 +126,7 @@ class App {
 	view(rootFile, rootPath, fileMap) {
 		if (this.viewer) this.viewer.clear();
 
-		const viewer = this.viewer || this.createViewer();
+		const viewers = this.viewers || this.createViewers(3);
 
 		const fileURL = typeof rootFile === 'string' ? rootFile : URL.createObjectURL(rootFile);
 
@@ -112,17 +135,15 @@ class App {
 			if (typeof rootFile === 'object') URL.revokeObjectURL(fileURL);
 		};
 
-		viewer
-			.load(fileURL, rootPath, fileMap)
-			.catch((e) => this.onError(e))
-			.then((gltf) => {
-				// TODO: GLTFLoader parsing can fail on invalid files. Ideally,
-				// we could run the validator either way.
-				if (!this.options.kiosk) {
-					this.validator.validate(fileURL, rootPath, fileMap, gltf);
-				}
-				cleanup();
-			});
+		viewers.forEach((viewer) => {
+			viewer
+				.load(fileURL, rootPath, fileMap)
+				.catch((e) => this.onError(e))
+				.then((gltf) => {
+					cleanup();
+					this.activate(0);
+				});
+		});
 	}
 
 	/**

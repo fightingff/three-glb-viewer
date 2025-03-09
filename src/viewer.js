@@ -16,17 +16,20 @@ import {
 	REVISION,
 	Scene,
 	SkeletonHelper,
+	Vector2,
 	Vector3,
 	WebGLRenderer,
 	LinearToneMapping,
 	ACESFilmicToneMapping,
-	VideoTexture,
-	PlaneGeometry,
-	MeshStandardMaterial,
-	LinearFilter,
-	DoubleSide,
 	Mesh,
-	SRGBColorSpace
+	RingGeometry,
+	MeshBasicMaterial,
+	DoubleSide,
+	Raycaster,
+	PlaneGeometry,
+	AnimationUtils,
+	Line,
+	BufferGeometry
 } from 'three';
 import Stats from 'three/addons/libs/stats.module.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -52,21 +55,35 @@ const KTX2_LOADER = new KTX2Loader(MANAGER).setTranscoderPath(
 	`${THREE_PATH}/examples/jsm/libs/basis/`,
 );
 
-const IS_IOS = isIOS();
-
 const Preset = { ASSET_GENERATOR: 'assetgenerator' };
 
 Cache.enabled = true;
+const fps = 24;
 
 export class Viewer {
-	constructor(el, options) {
+	constructor(el, options, Lf, Rf, number = 1) {
 		this.el = el;
 		this.options = options;
 
 		this.lights = [];
+		/*
+		 为了编程（修改）方便，保留了以下全局属性
+		 this.clip = this.clips[this.activeIndex];
+		 this.mixer = this.mixers[this.activeIndex];
+		 this.content = this.contents[this.activeIndex];
+		*/
+		this.activated = false;
 		this.content = null;
 		this.mixer = null;
+		this.clip = null;
+		this.circles = [];
+
+		// 所有模型都放在数组中
+		this.activeIndex = 0;
+		this.contents = [];
 		this.clips = [];
+		this.mixers = [];
+
 		this.gui = null;
 
 		this.state = {
@@ -75,7 +92,7 @@ export class Viewer {
 					? environments.find((e) => e.id === 'footprint-court').name
 					: environments[1].name,
 			background: false,
-			playbackSpeed: 1.0,
+			playbackSpeed: 0.5,
 			actionStates: {},
 			camera: DEFAULT_CAMERA,
 			wireframe: false,
@@ -84,7 +101,6 @@ export class Viewer {
 			autoRotate: false,
 			isPlaying: true,
 			progress: 0,
-			currentClipIndex: 0,
 
 			// Lights
 			punctualLights: true,
@@ -94,7 +110,7 @@ export class Viewer {
 			ambientColor: '#FFFFFF',
 			directIntensity: 0.8 * Math.PI, // TODO(#116)
 			directColor: '#FFFFFF',
-			bgColor: '#191919',
+			bgColor: '#FAFAFA',
 
 			pointSize: 1.0,
 		};
@@ -129,6 +145,23 @@ export class Viewer {
 		this.controls = new OrbitControls(this.defaultCamera, this.renderer.domElement);
 		this.controls.screenSpacePanning = true;
 
+		// for debugging
+		// this.controls.addEventListener('change', () => {
+		// 	const data = {
+		// 	  position: this.controls.object.position.toArray(),
+		// 	  target: this.controls.target.toArray(),
+		// 	  zoom: this.controls.object.zoom,
+		// 	  rotation: this.controls.object.rotation.toArray()
+		// 	};
+			
+		// 	console.log('[Camera Update]', data);
+		// });
+		/*
+			position: (3) [1.7578285440729613, 1.5392933972663534, 2.2367909549919216]
+			rotation: (4) [-0.16531715936401808, 0.32933913250404134, 0.05390668627904448, 'XYZ']
+			target: (3) [0.5696888275716602, 0.9672218134681669, -1.192075950944766]
+		*/
+
 		this.el.appendChild(this.renderer.domElement);
 
 		this.cameraCtrl = null;
@@ -141,25 +174,29 @@ export class Viewer {
 		this.gridHelper = null;
 		this.axesHelper = null;
 
-        // 添加自定义进度条
-        this.progressContainer = document.createElement('div');
+		// 添加自定义进度条容器
+		this.progressContainer = document.createElement('div');
 		this.progressContainer.style.cssText = `
 			position: absolute;
 			bottom: 5%;
-			width: 100%;
+			width: 83%; 
 			height: 2.6%;
-			background-color: #444;
-			border-radius: 4px;
-			overflow: hidden;
+			background-color: #D9D9D9;
 			cursor: pointer;
+			left: 16%;
+			transform: skewX(-20deg);
 		`;
 
-        this.progressBar = document.createElement('div');
+		// 进度条主体
+		this.progressBar = document.createElement('div');
 		this.progressBar.style.cssText = `
 			width: 0%;
 			height: 100%;
-			background-color: #00ff88;
-			transition: width 0.1s linear;
+			background: linear-gradient(90deg, #00ff88 0%,rgb(255, 38, 0) 100%);
+			transition: width 0.01s cubic-bezier(0.4, 0, 0.2, 1); 
+			position: relative;
+			border-top-right-radius: 20px;
+			border-bottom-right-radius: 20px;
 		`;
 
         this.progressContainer.appendChild(this.progressBar);
@@ -182,14 +219,44 @@ export class Viewer {
 				this.isDragging = false;
 				this.state.isPlaying = false;
 				this.handleProgressClick(e);
-				this.clips.forEach(clip => {
-					const action = this.mixer.clipAction(clip);
-					action.paused = true;
-				});
 				this.playButton.innerHTML='<img src="/play.png">';
 				
+				const action = this.mixer.clipAction(this.clip);
+				action.paused = true;
 			}
 		});
+
+		// 在开头添加关键帧标志：一个圆中包含一个数字
+		const label = document.createElement('span');
+		label.style.cssText = `
+			position: absolute;
+			bottom: 3%;
+			left: 6%;
+			color: red;
+			font-size: 3rem;
+			transform: rotate(20deg);
+		`;
+		label.innerHTML = number;
+		this.el.appendChild(label);
+
+		this.label_circle = document.createElement('div');
+		this.label_circle.style.cssText = `
+			position: absolute;
+			bottom: 1.3%;
+			left: 2%;
+			width: 12%;
+			height: 10%;
+			border-radius: 50%;
+			background-color: transparent;
+			border: 10px outset 0xC59CF4;
+			transform: rotate(20deg) perspective(500px) rotateX(-15deg);
+			box-shadow: 
+				inset 3px 3px 8px rgba(0,0,0,0.3),
+				0 0 20px 5px rgba(128,0,128,0.4),
+				5px 5px 15px rgba(0,0,0,0.5);
+	  	`;
+		this.el.appendChild(this.label_circle);
+
 		
 		// 添加播放控制按钮
 		this.playButton = document.createElement('div');
@@ -202,50 +269,21 @@ export class Viewer {
 			display: flex;
 			justify-content: center;
 			align-items: center;
-
 		`;
 
 		this.playButton.innerHTML = '<img src="/play.png">';
 		this.playButton.addEventListener('click', () => {
+			// console.log('click');
 			this.togglePlay();
 			this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
+			this.playButton.style.display = this.activated ? 'flex' : 'none';
 		});
 
 		// 初始化时设置播放按钮状态
 		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
-		
+		this.playButton.style.display = this.activated ? 'flex' : 'none';
+
 		this.el.appendChild(this.playButton);
-
-		// 添加视频元素
-		this.videoElement = document.createElement('video');
-		// this.el.insertBefore(this.videoElement, this.el.firstChild);
-
-		// 初始化视频
-		this.videoDuration = 0;
-		this.loadVideo('/video.mp4');
-
-		// 创建视频纹理
-		const videoTexture = new VideoTexture(this.videoElement);
-		videoTexture.minFilter = LinearFilter;
-		videoTexture.magFilter = LinearFilter;
-		videoTexture.colorSpace = SRGBColorSpace
-	
-		// 创建3D平面 21:9
-		const width = 7;
-		const height = 3;
-
-		const geometry = new PlaneGeometry(width, height); // 1920 * 1080
-		const material = new MeshStandardMaterial({
-			map: videoTexture,
-			emissive: 0xffffff,
-			emissiveIntensity: 0,
-			side: DoubleSide
-		});
-
-		this.plane = new Mesh(geometry, material);
-		this.plane.position.set(0, height / 2.0, -1);
-		this.plane.rotation.y = -Math.PI / 6.0;
-		this.scene.add(this.plane);
 
 		this.addAxesHelper();
 		this.addGUI();
@@ -254,19 +292,119 @@ export class Viewer {
 		this.animate = this.animate.bind(this);
 		requestAnimationFrame(this.animate);
 		window.addEventListener('resize', this.resize.bind(this), false);
-		this.togglePlay();
-	}
+		// this.togglePlay();
 
-	loadVideo(source) {
-		// 监听视频元数据加载
-		this.videoElement.addEventListener('loadedmetadata', () => {
-			this.videoDuration = this.videoElement.duration;
-			console.log(this.videoDuration)
+
+		// 在进度条上添加关键帧标记
+		this.Lf = Lf;
+		this.Rf = Rf;
+
+		// 鼠标交互
+		this.mouse = new Vector2();
+		this.raycaster = new Raycaster();
+
+		// 添加地面帮助获得鼠标位置
+		const groundGeometry = new PlaneGeometry(100, 100);
+		const groundMaterial = new MeshBasicMaterial({ visible: false });
+		this.ground = new Mesh(groundGeometry, groundMaterial);
+		this.ground.rotation.x = -Math.PI/2;
+		this.scene.add(this.ground);
+
+		// TODO: mousehover指示
+
+		// 旋转模型
+		this.isRotating = false;
+		this.prevAngle = 0;
+		this.renderer.domElement.addEventListener('mousedown', (event) => {
+			const intersect = this.getObject(event);
+			if (intersect) {
+				const object = intersect.object;
+				const point = intersect.point;
+				if (object == this.circles[0]) {
+					this.isRotating = true;
+					this.circles[0].material.color.set(0x00ff00);
+					this.prevAngle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
+				}
+			}
 		});
 
-        this.videoElement.src = source;
-        this.videoElement.style.display = 'block';
-    }
+		this.renderer.domElement.addEventListener('mousemove', (event) => {
+			if (this.isRotating) {
+				const point = this.getObject(event).point;
+				const angle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
+				this.content.rotation.y -= angle - this.prevAngle;
+				this.prevAngle = angle;
+			}
+		});
+
+		this.renderer.domElement.addEventListener('mouseup', () => {
+			this.circles[0].material.color.set(0xC59CF4);
+			this.isRotating = false;
+		});
+
+		this.renderer.domElement.addEventListener('click', (event) => {
+			const intersect = this.getObject(event);
+
+			if (intersect) {
+				const object = intersect.object;
+				const index = this.contents.indexOf(object.parent.parent);
+				console.log(index, this.activeIndex);
+				if (index !== -1) {
+					if (index === this.activeIndex) return;
+					[this.contents[index].position.z, this.contents[this.activeIndex].position.z] = 
+						[this.contents[this.activeIndex].position.z, this.contents[index].position.z];
+					
+					// TODO: 使用动画切换模型位置
+
+					this.activeIndex = index;
+					this.clip = this.clips[this.activeIndex];
+					this.mixer = this.mixers[this.activeIndex];
+					this.content = this.contents[this.activeIndex];
+				}
+			}
+		}
+		);
+	}
+
+	getObject(event) {
+		const rect = this.renderer.domElement.getBoundingClientRect();
+		this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+		this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+		this.raycaster.setFromCamera(this.mouse, this.defaultCamera);
+		const intersects = this.raycaster.intersectObjects(this.scene.children, true);
+		return intersects.length > 0 ? intersects[0] : null;
+	}
+
+	activate() {
+		this.activated = true;
+		this.circles.forEach((circle) => this.scene.add(circle));
+		this.playButton.style.display = 'flex';
+
+		// 样式优化
+		this.label_circle.style.background = `
+			radial-gradient(circle at 30% 30%, 
+			rgba(255,255,255,0.3) 0%,
+			rgba(128,0,128,0.6) 60%,
+			rgba(64,0,64,0.8) 100%)
+		`;
+		this.progressContainer.style.boxShadow = '0 0 5px 5px rgba(128,0,128,0.4)';
+	}
+
+	deactivate() {
+		if (this.state.isPlaying){
+			this.togglePlay();
+		}
+		// 清空播放进度
+		this.seekAnimation(0);
+		this.activated = false;
+		this.circles.forEach((circle) => this.scene.remove(circle));
+		this.playButton.style.display = 'none';
+
+		// 样式优化
+		this.label_circle.style.background = 'transparent';
+		this.progressContainer.style.boxShadow = 'none';
+	}
 
 	animate(time) {
 		requestAnimationFrame(this.animate);
@@ -281,17 +419,9 @@ export class Viewer {
 			this.mixer.update(scaledDelta);
 	
 			// 更新进度条显示
-			const activeClip = this.clips[this.state.currentClipIndex];
-			const progress = (this.mixer.time % activeClip.duration) / activeClip.duration;
+			const progress = (this.mixer.time % this.clip.duration) / this.clip.duration;
 			this.progressBar.style.width = `${progress * 100}%`;
 
-			// 更新视频播放进度
-			if (this.videoElement.readyState > 0) {
-				const targetTime = progress * this.videoDuration;
-				if (Math.abs(this.videoElement.currentTime - targetTime) > 0.1) {
-					this.videoElement.currentTime = targetTime;
-				}
-			}
 		}
 
 		this.render();
@@ -300,22 +430,16 @@ export class Viewer {
 
     handleProgressClick(e) {
         const rect = this.progressContainer.getBoundingClientRect();
-        const progress = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+		const progress = (e.clientX - rect.left) / rect.width;
         this.seekAnimation(progress);
     }
 
     seekAnimation(progress) {
-        const clip = this.clips[this.state.currentClipIndex];
-        const targetTime = progress * clip.duration;
+        const targetTime = progress * this.clip.duration;
 		// console.log(clip.duration);
         this.mixer.setTime(targetTime);
-		this.clips.forEach(clip => {
-			const action = this.mixer.clipAction(clip);
-			action.paused = false;
-		});
-
-		// 更新视频画面
-		this.videoElement.currentTime = progress * this.videoDuration;
+		const action = this.mixer.clipAction(this.clip);
+		action.paused = false;
     }
 
 	render() {
@@ -339,7 +463,7 @@ export class Viewer {
 		this.axesRenderer.setSize(this.axesDiv.clientWidth, this.axesDiv.clientHeight);
 	}
 
-	load(url, rootPath, assetMap) {
+	load(url, rootPath, assetMap, std=true) {
 		const baseURL = LoaderUtils.extractUrlBase(url);
 
 		// Load.
@@ -381,6 +505,8 @@ export class Viewer {
 					const scene = gltf.scene || gltf.scenes[0];
 					const clips = gltf.animations || [];
 
+					console.log(clips);
+
 					if (!scene) {
 						// Valid, but not supported by this viewer.
 						throw new Error(
@@ -389,8 +515,13 @@ export class Viewer {
 						);
 					}
 
-					this.setContent(scene, clips);
-
+					if (std){
+						this.setContent(scene, clips);
+						this.load("/clq_bind_v5.glb", rootPath, assetMap, false);
+						this.load("/test.glb", rootPath, assetMap, false);
+					}else{
+						this.addWrongContent(scene, clips[0], -0.7);
+					}
 					blobURLs.forEach(URL.revokeObjectURL);
 
 					// See: https://github.com/google/draco/issues/349
@@ -404,6 +535,49 @@ export class Viewer {
 		});
 	}
 
+	addWrongContent(object, clip, offset) {
+		object.updateMatrixWorld();
+		const box = new Box3().setFromObject(object);
+		const size = box.getSize(new Vector3()).length();
+
+		object.rotation.y = -Math.PI / 2.0;
+		object.position.x += size * 0.3;
+		object.position.z += size * offset * (this.contents.length - 1);
+
+
+		// 绘制一条线段从上一个模型的圆心到当前模型的圆心
+		const last = this.circles[this.circles.length - 1];
+		const delta = 0.02;
+		const points = [
+			new Vector3(last.position.x, 0, last.position.z - last.geometry.parameters.outerRadius + delta),
+			new Vector3(object.position.x, 0, object.position.z + size * 0.18 - delta),
+		];
+		const line = new Line(
+			new BufferGeometry().setFromPoints(points),
+			new MeshBasicMaterial({ color: 0xC59CF4 })
+		);
+		line.material.linewidth = 6; // 设置线段宽度
+		this.circles.push(line);
+
+		// 绘制一个小半径为size，圆心为（x, 0, z），平行于xz平面的圆环
+		const circle = new Mesh(
+			new RingGeometry(size * 0.15, size * 0.18),
+			new MeshBasicMaterial({ color: 0xD9D9D9, side: DoubleSide, depthWrite: true }),
+		);
+		circle.rotation.x = Math.PI / 2;
+		circle.position.set(object.position.x, 0, object.position.z);
+		this.circles.push(circle);
+
+		this.scene.add(object);
+		this.contents.push(object);
+
+		let mixer = new AnimationMixer(object);
+		mixer.clipAction(clip).reset().play();
+		mixer.update(0);
+		this.mixers.push(mixer);
+		this.clips.push(clip);
+	}
+
 	/**
 	 * @param {THREE.Object3D} object
 	 * @param {Array<THREE.AnimationClip} clips
@@ -415,18 +589,22 @@ export class Viewer {
 
 		const box = new Box3().setFromObject(object);
 		const size = box.getSize(new Vector3()).length();
-		const center = box.getCenter(new Vector3());
 
 		this.controls.reset();
 
-
 		// 旋转模型使得人体模型面部朝向z轴正方向
-		object.rotation.y = Math.PI;
+		object.rotation.y = -Math.PI / 2.0;
+		object.position.x += size * 0.3;
+		object.position.z += size * 0.6;
 
-		//移动到左下方
-		const Delta = 1;
-		object.position.x -= Delta;
-		object.position.z += Delta;
+		// 绘制一个小半径为size，圆心为（x, 0, z），平行于xz平面的圆环
+		const circle = new Mesh(
+			new RingGeometry(size * 0.25, size * 0.28),
+			new MeshBasicMaterial({ color: 0xC59CF4, side: DoubleSide, depthWrite: true }),
+		);
+		circle.rotation.x = Math.PI / 2;
+		circle.position.set(object.position.x, 0, object.position.z);
+		this.circles.push(circle);
 
 		this.controls.maxDistance = size * 10;
 		this.defaultCamera.position.set(0, 0, size * 2.5);
@@ -438,10 +616,10 @@ export class Viewer {
 			this.defaultCamera.position.fromArray(this.options.cameraPosition);
 			this.defaultCamera.lookAt(new Vector3());
 		} else {
-			this.defaultCamera.position.copy(center);
-			this.defaultCamera.position.x += size / 2.0;
-			this.defaultCamera.position.y += size / 5.0;
-			this.defaultCamera.position.z += size / 2.0;
+			this.defaultCamera.position.x = size;
+			this.defaultCamera.position.y = size * 0.5;
+			this.defaultCamera.position.z = size * 1.2;
+			const center = new Vector3(size * 0.2, size * 0.4, -size * 0.5);
 			this.defaultCamera.lookAt(center);
 		}
 
@@ -455,9 +633,11 @@ export class Viewer {
 		this.axesCorner.scale.set(size, size, size);
 
 		this.controls.saveState();
+		this.controls.enabled = false;
 
 		this.scene.add(object);
 		this.content = object;
+		this.contents.push(object);
 
 		this.state.punctualLights = true;
 
@@ -495,33 +675,29 @@ export class Viewer {
 			this.mixer = null;
 		}
 
-		this.clips = clips;
-		if (!clips.length) return;
+		this.clip = AnimationUtils.subclip(clips[0], 'subClip', this.Lf, this.Rf);
+		this.clips.push(this.clip);
+		const frames = Math.floor(this.clip.duration * fps);
+		console.log(frames);
+
+		// TODO: 添加关键帧标记
 
 		this.mixer = new AnimationMixer(this.content);
-	}
+		this.mixer.clipAction(this.clip).reset().play();
+		this.togglePlay();
 
-	playAllClips() {
-		this.clips.forEach((clip) => {
-			this.mixer.clipAction(clip).reset().play();
-			this.state.actionStates[clip.name] = true;
-		});
+		this.mixers.push(this.mixer);
 	}
 
 	// 新增动画控制方法
 	togglePlay() {
 		this.state.isPlaying = !this.state.isPlaying;
-		this.clips.forEach(clip => {
-			const action = this.mixer.clipAction(clip);
-			action.paused = !this.state.isPlaying;
-		});
 		// 控制播放按钮可见性
 		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
-		if (this.state.isPlaying) {
-			this.videoElement.play();
-		}else {
-			this.videoElement.pause();
-		}
+		this.playButton.style.display = this.activated ? 'flex' : 'none';
+		console.log(this.mixer);
+		const action = this.mixer.clipAction(this.clip);
+		action.paused = !this.state.isPlaying;
 	}
 
 
@@ -599,9 +775,6 @@ export class Viewer {
 		this.getCubeMapTexture(environment).then(({ envMap }) => {
 			this.scene.environment = envMap;
 			this.scene.background = this.state.bgColor;
-
-			// 显示视频平面
-			this.plane.visible = this.state.background;
 		});
 			
 	}
@@ -709,8 +882,8 @@ export class Viewer {
 
 	addGUI() {
 		const gui = (this.gui = new GUI({
-			autoPlace: false,
-			width: 260,
+			autoPlace: true,
+			width: 180,
 			hideable: true,
 		}));
 
@@ -761,7 +934,6 @@ export class Viewer {
 		playbackSpeedCtrl.onChange((speed) => {
 			if (this.mixer) this.mixer.timeScale = speed;
 		});
-		this.animFolder.add({ playAll: () => this.playAllClips() }, 'playAll');
 
 		// Morph target controls.
 		this.morphFolder = gui.addFolder('Morph Targets');
@@ -783,7 +955,7 @@ export class Viewer {
 		this.el.appendChild(guiWrap);
 		guiWrap.classList.add('gui-wrap');
 		guiWrap.appendChild(gui.domElement);
-		gui.open();
+		gui.close();
 	}
 
 	updateGUI() {
@@ -839,32 +1011,6 @@ export class Viewer {
 			});
 		}
 
-		if (this.clips.length) {
-			this.animFolder.domElement.style.display = '';
-			const actionStates = (this.state.actionStates = {});
-			this.clips.forEach((clip, clipIndex) => {
-				clip.name = `${clipIndex + 1}. ${clip.name}`;
-
-				// Autoplay the first clip.
-				let action;
-				if (clipIndex === 0) {
-					actionStates[clip.name] = true;
-					action = this.mixer.clipAction(clip);
-					action.play();
-				} else {
-					actionStates[clip.name] = false;
-				}
-
-				// Play other clips when enabled.
-				const ctrl = this.animFolder.add(actionStates, clip.name).listen();
-				ctrl.onChange((playAnimation) => {
-					action = action || this.mixer.clipAction(clip);
-					action.setEffectiveTimeScale(1);
-					playAnimation ? action.play() : action.stop();
-				});
-				this.animCtrls.push(ctrl);
-			});
-		}
 	}
 
 	clear() {
@@ -896,15 +1042,4 @@ function traverseMaterials(object, callback) {
 		const materials = Array.isArray(node.material) ? node.material : [node.material];
 		materials.forEach(callback);
 	});
-}
-
-// https://stackoverflow.com/a/9039885/1314762
-function isIOS() {
-	return (
-		['iPad Simulator', 'iPhone Simulator', 'iPod Simulator', 'iPad', 'iPhone', 'iPod'].includes(
-			navigator.platform,
-		) ||
-		// iPad on iOS 13 detection
-		(navigator.userAgent.includes('Mac') && 'ontouchend' in document)
-	);
 }

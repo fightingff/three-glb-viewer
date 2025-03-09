@@ -39,6 +39,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/Addons.js';
 
 import { GUI } from 'dat.gui';
 
@@ -61,7 +62,7 @@ Cache.enabled = true;
 const fps = 24;
 
 export class Viewer {
-	constructor(el, options, Lf, Rf, number = 1) {
+	constructor(el, options, number) {
 		this.el = el;
 		this.options = options;
 
@@ -83,6 +84,15 @@ export class Viewer {
 		this.contents = [];
 		this.clips = [];
 		this.mixers = [];
+		this.labels = [];
+
+		// 新增CSS2D渲染器初始化
+		this.labelRenderer = new CSS2DRenderer();
+		this.labelRenderer.setSize(el.clientWidth, el.clientHeight);
+		this.labelRenderer.domElement.style.position = 'absolute';
+		this.labelRenderer.domElement.style.top = '0';
+		this.labelRenderer.domElement.style.pointerEvents = 'none';
+		el.appendChild(this.labelRenderer.domElement);
 
 		this.gui = null;
 
@@ -294,11 +304,6 @@ export class Viewer {
 		window.addEventListener('resize', this.resize.bind(this), false);
 		// this.togglePlay();
 
-
-		// 在进度条上添加关键帧标记
-		this.Lf = Lf;
-		this.Rf = Rf;
-
 		// 鼠标交互
 		this.mouse = new Vector2();
 		this.raycaster = new Raycaster();
@@ -353,6 +358,8 @@ export class Viewer {
 					if (index === this.activeIndex) return;
 					[this.contents[index].position.z, this.contents[this.activeIndex].position.z] = 
 						[this.contents[this.activeIndex].position.z, this.contents[index].position.z];
+					// [this.labels[index].position.z, this.labels[this.activeIndex].position.z] =
+					// 	[this.labels[this.activeIndex].position.z, this.labels[index].position.z];
 					
 					// TODO: 使用动画切换模型位置
 
@@ -444,6 +451,7 @@ export class Viewer {
 
 	render() {
 		this.renderer.render(this.scene, this.activeCamera);
+		this.labelRenderer.render(this.scene, this.activeCamera); // 渲染CSS2D标签
 		if (this.state.grid) {
 			this.axesCamera.position.copy(this.defaultCamera.position);
 			this.axesCamera.lookAt(this.axesScene.position);
@@ -463,39 +471,31 @@ export class Viewer {
 		this.axesRenderer.setSize(this.axesDiv.clientWidth, this.axesDiv.clientHeight);
 	}
 
-	load(url, rootPath, assetMap, std=true) {
-		const baseURL = LoaderUtils.extractUrlBase(url);
+	createText(text, object){
+		// 创建HTML元素
+		const labelDiv = document.createElement('div');
+		labelDiv.textContent = text;
+		labelDiv.style.cssText = `
+		  color: black;
+		  background: transparent;
+		  font-size: 30px;
+		`;
+	
+		// 创建CSS2D对象并定位
+		const label = new CSS2DObject(labelDiv);
+		label.position.set(-1, 0, 0);
+		object.add(label);
+		this.labels.push(label);
+	}
 
-		// Load.
+	load(url, Lf=0, Rf=100, std=true, text='') {
 		return new Promise((resolve, reject) => {
-			// Intercept and override relative URLs.
-			MANAGER.setURLModifier((url, path) => {
-				// URIs in a glTF file may be escaped, or not. Assume that assetMap is
-				// from an un-escaped source, and decode all URIs before lookups.
-				// See: https://github.com/donmccurdy/three-gltf-viewer/issues/146
-				const normalizedURL =
-					rootPath +
-					decodeURI(url)
-						.replace(baseURL, '')
-						.replace(/^(\.?\/)/, '');
-
-				if (assetMap.has(normalizedURL)) {
-					const blob = assetMap.get(normalizedURL);
-					const blobURL = URL.createObjectURL(blob);
-					blobURLs.push(blobURL);
-					return blobURL;
-				}
-
-				return (path || '') + url;
-			});
 
 			const loader = new GLTFLoader(MANAGER)
 				.setCrossOrigin('anonymous')
 				.setDRACOLoader(DRACO_LOADER)
 				.setKTX2Loader(KTX2_LOADER.detectSupport(this.renderer))
 				.setMeshoptDecoder(MeshoptDecoder);
-
-			const blobURLs = [];
 
 			loader.load(
 				url,
@@ -516,16 +516,10 @@ export class Viewer {
 					}
 
 					if (std){
-						this.setContent(scene, clips);
-						this.load("/clq_bind_v5.glb", rootPath, assetMap, false);
-						this.load("/test.glb", rootPath, assetMap, false);
+						this.setContent(scene, clips, Lf, Rf, 'std');
 					}else{
-						this.addWrongContent(scene, clips[0], -0.7);
+						this.addWrongContent(scene, clips[0], -0.7, Lf, Rf, text);
 					}
-					blobURLs.forEach(URL.revokeObjectURL);
-
-					// See: https://github.com/google/draco/issues/349
-					// DRACOLoader.releaseDecoderModule();
 
 					resolve(gltf);
 				},
@@ -535,7 +529,7 @@ export class Viewer {
 		});
 	}
 
-	addWrongContent(object, clip, offset) {
+	addWrongContent(object, clip, offset, Lf, Rf, text) {
 		object.updateMatrixWorld();
 		const box = new Box3().setFromObject(object);
 		const size = box.getSize(new Vector3()).length();
@@ -568,21 +562,25 @@ export class Viewer {
 		circle.position.set(object.position.x, 0, object.position.z);
 		this.circles.push(circle);
 
+		// 添加文字标签
+		this.createText(text, object);
+
 		this.scene.add(object);
 		this.contents.push(object);
 
 		let mixer = new AnimationMixer(object);
-		mixer.clipAction(clip).reset().play();
+		const subClip = AnimationUtils.subclip(clip, 'subClip', Lf, Rf);
+		mixer.clipAction(subClip).reset().play();
 		mixer.update(0);
 		this.mixers.push(mixer);
-		this.clips.push(clip);
+		this.clips.push(subClip);
 	}
 
 	/**
 	 * @param {THREE.Object3D} object
 	 * @param {Array<THREE.AnimationClip} clips
 	 */
-	setContent(object, clips) {
+	setContent(object, clips, Lf, Rf, text) {
 		this.clear();
 
 		object.updateMatrixWorld(); // donmccurdy/three-gltf-viewer#330
@@ -605,6 +603,9 @@ export class Viewer {
 		circle.rotation.x = Math.PI / 2;
 		circle.position.set(object.position.x, 0, object.position.z);
 		this.circles.push(circle);
+
+		// 添加文字标签
+		this.createText(text, object);
 
 		this.controls.maxDistance = size * 10;
 		this.defaultCamera.position.set(0, 0, size * 2.5);
@@ -647,7 +648,7 @@ export class Viewer {
 			}
 		});
 
-		this.setClips(clips);
+		this.setClips(clips, Lf, Rf);
 
 		this.updateLights();
 		this.updateGUI();
@@ -668,19 +669,15 @@ export class Viewer {
 	/**
 	 * @param {Array<THREE.AnimationClip} clips
 	 */
-	setClips(clips) {
+	setClips(clips, Lf, Rf) {
 		if (this.mixer) {
 			this.mixer.stopAllAction();
 			this.mixer.uncacheRoot(this.mixer.getRoot());
 			this.mixer = null;
 		}
 
-		this.clip = AnimationUtils.subclip(clips[0], 'subClip', this.Lf, this.Rf);
+		this.clip = AnimationUtils.subclip(clips[0], 'subClip', Lf, Rf);
 		this.clips.push(this.clip);
-		const frames = Math.floor(this.clip.duration * fps);
-		console.log(frames);
-
-		// TODO: 添加关键帧标记
 
 		this.mixer = new AnimationMixer(this.content);
 		this.mixer.clipAction(this.clip).reset().play();

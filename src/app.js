@@ -30,14 +30,8 @@ class App {
 		this.el = el;
 		this.viewers = null;
 		this.viewerEls = null;
-		this.spinnerEl = el.querySelector('.spinner');
-		this.dropEl = el.querySelector('.dropzone');
-		this.inputEl = el.querySelector('#file-input');
-		this.validator = new Validator(el);
+		this.wrapperEl = el.querySelector('.wrap');
 		this.activateIndex = null;
-
-		this.createDropzone();
-		this.hideSpinner();
 
 		const options = this.options;
 
@@ -49,6 +43,8 @@ class App {
 		if (options.model) {
 			this.view(options.model, '', new Map());
 		}
+
+		this.view();
 	}
 
 	activate(index) {
@@ -59,15 +55,6 @@ class App {
 		this.activateIndex = index;
 		this.viewers[index].activate();
 	}
-	/**
-	 * Sets up the drag-and-drop controller.
-	 */
-	createDropzone() {
-		const dropCtrl = new SimpleDropzone(this.dropEl, this.inputEl);
-		dropCtrl.on('drop', ({ files }) => this.load(files));
-		dropCtrl.on('dropstart', () => this.showSpinner());
-		dropCtrl.on('droperror', () => this.hideSpinner());
-	}
 
 	/**
 	 * Sets up the view manager.
@@ -77,7 +64,6 @@ class App {
 		// 创建num_keyframes个viewer
 		this.viewerEls = [];
 		this.viewers = [];
-		const keyFrames = [0, 62, 91, 123];
 		for (let i = 0; i < num_keyframes; i++) {
 			const viewerEl = document.createElement('div');
 			viewerEl.style.cssText = `
@@ -89,32 +75,11 @@ class App {
 			viewerEl.addEventListener('mousedown', () => {
 				this.activate(i);
 			});
-			this.dropEl.appendChild(viewerEl);
+			this.wrapperEl.appendChild(viewerEl);
 			this.viewerEls.push(viewerEl);
-			this.viewers.push(new Viewer(viewerEl, this.options, keyFrames[i], keyFrames[i + 1], i + 1));
+			this.viewers.push(new Viewer(viewerEl, this.options, i + 1));
 		}
 		return this.viewers;
-	}
-
-	/**
-	 * Loads a fileset provided by user action.
-	 * @param  {Map<string, File>} fileMap
-	 */
-	load(fileMap) {
-		let rootFile;
-		let rootPath;
-		Array.from(fileMap).forEach(([path, file]) => {
-			if (file.name.match(/\.(gltf|glb)$/)) {
-				rootFile = file;
-				rootPath = path.replace(file.name, '');
-			}
-		});
-
-		if (!rootFile) {
-			this.onError('No .gltf or .glb asset found.');
-		}
-
-		this.view(rootFile, rootPath, fileMap);
 	}
 
 	/**
@@ -123,51 +88,26 @@ class App {
 	 * @param  {string} rootPath
 	 * @param  {Map<string, File>} fileMap
 	 */
-	view(rootFile, rootPath, fileMap) {
-		if (this.viewer) this.viewer.clear();
-
+	view() {
+		if (this.viewers) {
+			this.viewers.forEach((viewer) => viewer.clear());
+			this.viewers = null;
+		}
 		const viewers = this.viewers || this.createViewers(3);
 
-		const fileURL = typeof rootFile === 'string' ? rootFile : URL.createObjectURL(rootFile);
-
-		const cleanup = () => {
-			this.hideSpinner();
-			if (typeof rootFile === 'object') URL.revokeObjectURL(fileURL);
-		};
-
-		viewers.forEach((viewer) => {
-			viewer
-				.load(fileURL, rootPath, fileMap)
-				.catch((e) => this.onError(e))
-				.then((gltf) => {
-					cleanup();
-					this.activate(0);
-				});
-		});
-	}
-
-	/**
-	 * @param  {Error} error
-	 */
-	onError(error) {
-		let message = (error || {}).message || error.toString();
-		if (message.match(/ProgressEvent/)) {
-			message = 'Unable to retrieve this file. Check JS console and browser network tab.';
-		} else if (message.match(/Unexpected token/)) {
-			message = `Unable to parse file content. Verify that this file is valid. Error: "${message}"`;
-		} else if (error && error.target && error.target instanceof Image) {
-			message = 'Missing texture: ' + error.target.src.split('/').pop();
+		// 加载参考模型
+		let keyFrames = [0, 62, 91, 123];
+		let texts = [];
+		for (let i = 0; i < viewers.length; i++) {
+			viewers[i].load("/ref.glb", keyFrames[i], keyFrames[i + 1], true);
 		}
-		window.alert(message);
-		console.error(error);
-	}
 
-	showSpinner() {
-		this.spinnerEl.style.display = '';
-	}
-
-	hideSpinner() {
-		this.spinnerEl.style.display = 'none';
+		// 加载用户模型
+		keyFrames = [0, 97, 134, 165];
+		texts = ['start', 'ready', 'lowest'];		
+		for (let i = 0; i < viewers.length; i++) {
+			viewers[i].load("/clq_bind_v5.glb", keyFrames[i], keyFrames[i + 1], false, texts[i]);
+		}
 	}
 }
 
@@ -177,6 +117,4 @@ document.addEventListener('DOMContentLoaded', () => {
 	const app = new App(document.body, location);
 
 	window.VIEWER.app = app;
-
-	console.info('[glTF Viewer] Debugging data exported as `window.VIEWER`.');
 });

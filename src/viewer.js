@@ -42,6 +42,7 @@ import { GUI } from 'dat.gui';
 import { environments } from './environments.js';
 
 const DEFAULT_CAMERA = '[default]';
+const fps = 30;
 
 const MANAGER = new LoadingManager();
 const THREE_PATH = `https://unpkg.com/three@0.${REVISION}.x`;
@@ -59,7 +60,7 @@ const Preset = { ASSET_GENERATOR: 'assetgenerator' };
 Cache.enabled = true;
 
 export class Viewer {
-	constructor(el, options) {
+	constructor(el, options, video_url) {
 		this.el = el;
 		this.options = options;
 
@@ -74,13 +75,13 @@ export class Viewer {
 				options.preset === Preset.ASSET_GENERATOR
 					? environments.find((e) => e.id === 'footprint-court').name
 					: environments[1].name,
-			background: false,
+			background: true,
 			playbackSpeed: 1.0,
 			actionStates: {},
 			camera: DEFAULT_CAMERA,
 			wireframe: false,
 			skeleton: false,
-			grid: false,
+			grid: true,
 			autoRotate: false,
 			isPlaying: true,
 			progress: 0,
@@ -94,7 +95,7 @@ export class Viewer {
 			ambientColor: '#FFFFFF',
 			directIntensity: 0.8 * Math.PI, // TODO(#116)
 			directColor: '#FFFFFF',
-			bgColor: '#191919',
+			bgColor: '#C0C0C0',
 
 			pointSize: 1.0,
 		};
@@ -139,17 +140,17 @@ export class Viewer {
 		this.morphCtrls = [];
 		this.skeletonHelpers = [];
 		this.gridHelper = null;
+		this.floor = null;
 		this.axesHelper = null;
 
         // 添加自定义进度条
         this.progressContainer = document.createElement('div');
 		this.progressContainer.style.cssText = `
 			position: absolute;
-			bottom: 5%;
+			bottom: 2%;
 			width: 100%;
 			height: 2.6%;
-			background-color: #444;
-			border-radius: 4px;
+			background-color: #C0C0C0;
 			overflow: hidden;
 			cursor: pointer;
 		`;
@@ -159,7 +160,9 @@ export class Viewer {
 			width: 0%;
 			height: 100%;
 			background-color: #00ff88;
-			transition: width 0.1s linear;
+			transition: width 0.01s linear;
+			border-top-right-radius: 10px;
+			border-bottom-right-radius: 10px;
 		`;
 
         this.progressContainer.appendChild(this.progressBar);
@@ -222,7 +225,7 @@ export class Viewer {
 
 		// 初始化视频
 		this.videoDuration = 0;
-		this.loadVideo('/video.mp4');
+		this.loadVideo(video_url);
 
 		// 创建视频纹理
 		const videoTexture = new VideoTexture(this.videoElement);
@@ -231,8 +234,8 @@ export class Viewer {
 		videoTexture.colorSpace = SRGBColorSpace
 	
 		// 创建3D平面 21:9
-		const width = 7;
-		const height = 3;
+		const width = 14;
+		const height = 6;
 
 		const geometry = new PlaneGeometry(width, height); // 1920 * 1080
 		const material = new MeshStandardMaterial({
@@ -243,7 +246,7 @@ export class Viewer {
 		});
 
 		this.plane = new Mesh(geometry, material);
-		this.plane.position.set(0, height / 2.0, -1);
+		this.plane.position.set(0, height / 2.0, 0);
 		this.plane.rotation.y = -Math.PI / 6.0;
 		this.scene.add(this.plane);
 
@@ -339,31 +342,32 @@ export class Viewer {
 		this.axesRenderer.setSize(this.axesDiv.clientWidth, this.axesDiv.clientHeight);
 	}
 
-	load(url, rootPath, assetMap) {
-		const baseURL = LoaderUtils.extractUrlBase(url);
+	setKeyFrames(keyFrames) {
+		this.keyFrames = keyFrames;
+		keyFrames.forEach((keyFrame) => {
+			const progress = keyFrame / (this.clips[0].duration * fps);
+			const keyFrameEl = document.createElement('div');
+			keyFrameEl.style.cssText = `
+				position: absolute;
+				bottom: 0;
+				left: ${progress * 99.5}%;
+				width: 10px;
+				height: 100%;
+				background-color:rgb(207, 84, 186);
+			`;
+			this.progressContainer.appendChild(keyFrameEl);
+		});
+	}
+
+	setKeyFrame(keyFrame) {
+		const progress = keyFrame / (this.clips[0].duration * fps);
+		this.seekAnimation(progress);
+	}
+
+	load(url) {
 
 		// Load.
 		return new Promise((resolve, reject) => {
-			// Intercept and override relative URLs.
-			MANAGER.setURLModifier((url, path) => {
-				// URIs in a glTF file may be escaped, or not. Assume that assetMap is
-				// from an un-escaped source, and decode all URIs before lookups.
-				// See: https://github.com/donmccurdy/three-gltf-viewer/issues/146
-				const normalizedURL =
-					rootPath +
-					decodeURI(url)
-						.replace(baseURL, '')
-						.replace(/^(\.?\/)/, '');
-
-				if (assetMap.has(normalizedURL)) {
-					const blob = assetMap.get(normalizedURL);
-					const blobURL = URL.createObjectURL(blob);
-					blobURLs.push(blobURL);
-					return blobURL;
-				}
-
-				return (path || '') + url;
-			});
 
 			const loader = new GLTFLoader(MANAGER)
 				.setCrossOrigin('anonymous')
@@ -371,7 +375,6 @@ export class Viewer {
 				.setKTX2Loader(KTX2_LOADER.detectSupport(this.renderer))
 				.setMeshoptDecoder(MeshoptDecoder);
 
-			const blobURLs = [];
 
 			loader.load(
 				url,
@@ -390,11 +393,6 @@ export class Viewer {
 					}
 
 					this.setContent(scene, clips);
-
-					blobURLs.forEach(URL.revokeObjectURL);
-
-					// See: https://github.com/google/draco/issues/349
-					// DRACOLoader.releaseDecoderModule();
 
 					resolve(gltf);
 				},
@@ -415,7 +413,6 @@ export class Viewer {
 
 		const box = new Box3().setFromObject(object);
 		const size = box.getSize(new Vector3()).length();
-		const center = box.getCenter(new Vector3());
 
 		this.controls.reset();
 
@@ -424,12 +421,11 @@ export class Viewer {
 		object.rotation.y = Math.PI;
 
 		//移动到左下方
-		const Delta = 1;
-		object.position.x -= Delta;
-		object.position.z += Delta;
+		object.position.x -= 2;
+		object.position.z += 4;
 
 		this.controls.maxDistance = size * 10;
-		this.defaultCamera.position.set(0, 0, size * 2.5);
+		this.defaultCamera.position.set(-1, 1, 8);
 		this.defaultCamera.near = size / 100;
 		this.defaultCamera.far = size * 100;
 		this.defaultCamera.updateProjectionMatrix();
@@ -438,10 +434,7 @@ export class Viewer {
 			this.defaultCamera.position.fromArray(this.options.cameraPosition);
 			this.defaultCamera.lookAt(new Vector3());
 		} else {
-			this.defaultCamera.position.copy(center);
-			this.defaultCamera.position.x += size / 2.0;
-			this.defaultCamera.position.y += size / 5.0;
-			this.defaultCamera.position.z += size / 2.0;
+			const center = new Vector3(-1, 10, 0);
 			this.defaultCamera.lookAt(center);
 		}
 
@@ -455,6 +448,7 @@ export class Viewer {
 		this.axesCorner.scale.set(size, size, size);
 
 		this.controls.saveState();
+		this.controls.enabled = false;
 
 		this.scene.add(object);
 		this.content = object;
@@ -656,22 +650,28 @@ export class Viewer {
 			}
 		});
 
-		if (this.state.grid !== Boolean(this.gridHelper)) {
-			if (this.state.grid) {
-				this.gridHelper = new GridHelper();
-				this.axesHelper = new AxesHelper();
-				this.axesHelper.renderOrder = 999;
-				this.axesHelper.onBeforeRender = (renderer) => renderer.clearDepth();
-				this.scene.add(this.gridHelper);
-				this.scene.add(this.axesHelper);
-			} else {
-				this.scene.remove(this.gridHelper);
-				this.scene.remove(this.axesHelper);
-				this.gridHelper = null;
-				this.axesHelper = null;
-				this.axesRenderer.clear();
-			}
-		}
+		if (this.state.grid) {
+			// 创建白色地板平面（核心视觉）
+			const floorGeometry = new PlaneGeometry(21, 40);
+			const floorMaterial = new MeshStandardMaterial({
+			  color: 0xF8F9FA,  // 冷调白（参考现代家居的岩板白）
+			});
+			this.floor = new Mesh(floorGeometry, floorMaterial);
+			this.floor.rotation.x = -Math.PI / 2;
+			this.floor.position.y = -0.5;
+			this.scene.add(this.floor);
+		  
+			// 创建浅灰网格线（弱化但可见）
+			this.gridHelper = new GridHelper(20, 20, 0x888888, 0x888888);
+			this.gridHelper.position.y = -0.4;
+			this.scene.add(this.gridHelper);
+		  } else {
+			// 移除地板和网格线
+			if (this.floor) this.scene.remove(this.floor);
+			if (this.gridHelper) this.scene.remove(this.gridHelper);
+			this.floor = null;
+			this.gridHelper = null;
+		  }
 
 		this.controls.autoRotate = this.state.autoRotate;
 	}
@@ -710,7 +710,7 @@ export class Viewer {
 	addGUI() {
 		const gui = (this.gui = new GUI({
 			autoPlace: false,
-			width: 260,
+			width: 100,
 			hideable: true,
 		}));
 
@@ -783,7 +783,7 @@ export class Viewer {
 		this.el.appendChild(guiWrap);
 		guiWrap.classList.add('gui-wrap');
 		guiWrap.appendChild(gui.domElement);
-		gui.open();
+		gui.close();
 	}
 
 	updateGUI() {

@@ -192,7 +192,7 @@ export class Viewer {
 			skeleton: false,
 			grid: false,
 			autoRotate: false,
-			isPlaying: true,
+			isPlaying: false,
 			progress: 0,
 
 			// Lights

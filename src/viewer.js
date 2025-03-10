@@ -62,6 +62,7 @@ Cache.enabled = true;
 const fps = 24;
 
 export class Viewer {
+
 	constructor(el, options, number) {
 		this.el = el;
 		this.options = options;
@@ -73,18 +74,100 @@ export class Viewer {
 		 this.mixer = this.mixers[this.activeIndex];
 		 this.content = this.contents[this.activeIndex];
 		*/
-		this.activated = false;
-		this.content = null;
-		this.mixer = null;
-		this.clip = null;
-		this.circles = [];
+		// 存储每个关键帧的信息
+		class view {
 
-		// 所有模型都放在数组中
-		this.activeIndex = 0;
-		this.contents = [];
-		this.clips = [];
-		this.mixers = [];
-		this.labels = [];
+			constructor(viewer) {
+				this.viewer = viewer;
+				this.activated = false;
+				this.content = null;
+				this.mixer = null;
+				this.clip = null;
+				this.circles = [];
+	
+				// 所有模型都放在数组中
+				this.activeIndex = 0;
+				this.contents = [];
+				this.clips = [];
+				this.mixers = [];
+				this.labels = [];
+
+				// 旋转模型
+				this.isRotating = false;
+				this.prevAngle = 0;
+				this.addRotation();
+
+				// 点击切换
+				this.addSwitch();
+			}
+
+			addRotation() {
+				this.viewer.renderer.domElement.addEventListener('mousedown', (event) => {
+					const intersect = this.viewer.getObject(event);
+					if (intersect) {
+						const object = intersect.object;
+						const point = intersect.point;
+						if (object == this.circles[0]) {
+							this.isRotating = true;
+							this.circles[0].material.color.set(0x00ff00);
+							this.prevAngle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
+						}
+					}
+				});
+
+				this.viewer.renderer.domElement.addEventListener('mousemove', (event) => {
+					if (this.isRotating) {
+						const point = this.viewer.getObject(event).point;
+						const angle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
+						this.content.rotation.y -= angle - this.prevAngle;
+						this.prevAngle = angle;
+					}
+				});
+
+				this.viewer.renderer.domElement.addEventListener('mouseup', () => {
+					this.circles[0].material.color.set(0xC59CF4);
+					this.isRotating = false;
+				});
+			}
+
+			addSwitch() {
+				this.viewer.renderer.domElement.addEventListener('click', (event) => {
+					const intersect = this.viewer.getObject(event);
+					if (intersect) {
+						const object = intersect.object;
+						const index = this.contents.indexOf(object.parent.parent);
+						if (index !== -1) {
+							if (index === this.activeIndex) return;
+							[this.contents[index].position.z, this.contents[this.activeIndex].position.z] = 
+								[this.contents[this.activeIndex].position.z, this.contents[index].position.z];
+							this.activeIndex = index;
+							this.clip = this.clips[this.activeIndex];
+							this.mixer = this.mixers[this.activeIndex];
+							this.content = this.contents[this.activeIndex];
+						}
+					}
+				});	
+			}
+
+			activate() {
+				this.activated = true;
+				this.circles.forEach((circle) => this.viewer.scene.add(circle));
+			}
+		
+			deactivate() {
+				if (this.viewer.state.isPlaying){
+					this.viewer.togglePlay(this);
+				}
+				// 清空播放进度
+				this.viewer.seekAnimation(0, this);
+				this.activated = false;
+				this.circles.forEach((circle) => this.viewer.scene.remove(circle));
+			}
+
+		};
+		this.viewers = [];
+		this.activateView = 0;
+		this.createViewer = () => new view(this);
 
 		// 新增CSS2D渲染器初始化
 		this.labelRenderer = new CSS2DRenderer();
@@ -155,23 +238,6 @@ export class Viewer {
 		this.controls = new OrbitControls(this.defaultCamera, this.renderer.domElement);
 		this.controls.screenSpacePanning = true;
 
-		// for debugging
-		// this.controls.addEventListener('change', () => {
-		// 	const data = {
-		// 	  position: this.controls.object.position.toArray(),
-		// 	  target: this.controls.target.toArray(),
-		// 	  zoom: this.controls.object.zoom,
-		// 	  rotation: this.controls.object.rotation.toArray()
-		// 	};
-			
-		// 	console.log('[Camera Update]', data);
-		// });
-		/*
-			position: (3) [1.7578285440729613, 1.5392933972663534, 2.2367909549919216]
-			rotation: (4) [-0.16531715936401808, 0.32933913250404134, 0.05390668627904448, 'XYZ']
-			target: (3) [0.5696888275716602, 0.9672218134681669, -1.192075950944766]
-		*/
-
 		this.el.appendChild(this.renderer.domElement);
 
 		this.cameraCtrl = null;
@@ -184,116 +250,92 @@ export class Viewer {
 		this.gridHelper = null;
 		this.axesHelper = null;
 
-		// 添加自定义进度条容器
-		this.progressContainer = document.createElement('div');
-		this.progressContainer.style.cssText = `
-			position: absolute;
-			bottom: 5%;
-			width: 83%; 
-			height: 2.6%;
-			background-color: #D9D9D9;
-			cursor: pointer;
-			left: 16%;
-			transform: skewX(-20deg);
-		`;
+		// // 添加自定义进度条容器
+		// this.progressContainer = document.createElement('div');
+		// this.progressContainer.style.cssText = `
+		// 	position: absolute;
+		// 	bottom: 5%;
+		// 	width: 83%; 
+		// 	height: 2.6%;
+		// 	background-color: #D9D9D9;
+		// 	cursor: pointer;
+		// 	left: 16%;
+		// 	transform: skewX(-20deg);
+		// `;
 
-		// 进度条主体
-		this.progressBar = document.createElement('div');
-		this.progressBar.style.cssText = `
-			width: 0%;
-			height: 100%;
-			background: linear-gradient(90deg, #00ff88 0%,rgb(255, 38, 0) 100%);
-			transition: width 0.01s cubic-bezier(0.4, 0, 0.2, 1); 
-			position: relative;
-			border-top-right-radius: 20px;
-			border-bottom-right-radius: 20px;
-		`;
+		// // 进度条主体
+		// this.progressBar = document.createElement('div');
+		// this.progressBar.style.cssText = `
+		// 	width: 0%;
+		// 	height: 100%;
+		// 	background: linear-gradient(90deg, #00ff88 0%,rgb(255, 38, 0) 100%);
+		// 	transition: width 0.01s cubic-bezier(0.4, 0, 0.2, 1); 
+		// 	position: relative;
+		// 	border-top-right-radius: 20px;
+		// 	border-bottom-right-radius: 20px;
+		// `;
 
-        this.progressContainer.appendChild(this.progressBar);
-        this.el.appendChild(this.progressContainer);
+        // this.progressContainer.appendChild(this.progressBar);
+        // this.el.appendChild(this.progressContainer);
 
-        // 添加进度条交互事件
-        this.isDragging = false;
-        this.progressContainer.addEventListener('mousedown', (e) => {
-            this.isDragging = true;
-            // this.state.isPlaying = false;
-            this.handleProgressClick(e);
-        });
+        // // 添加进度条交互事件
+        // this.isDragging = false;
+        // this.progressContainer.addEventListener('mousedown', (e) => {
+        //     this.isDragging = true;
+        //     // this.state.isPlaying = false;
+        //     this.handleProgressClick(e);
+        // });
 
-        this.progressContainer.addEventListener('mousemove', (e) => {
-            if (this.isDragging) this.handleProgressClick(e);
-        });
+        // this.progressContainer.addEventListener('mousemove', (e) => {
+        //     if (this.isDragging) this.handleProgressClick(e);
+        // });
 
-		this.progressContainer.addEventListener('mouseup', (e) => {
-			if (this.isDragging) {
-				this.isDragging = false;
-				this.state.isPlaying = false;
-				this.handleProgressClick(e);
-				this.playButton.innerHTML='<img src="/play.png">';
+		// this.progressContainer.addEventListener('mouseup', (e) => {
+		// 	if (this.isDragging) {
+		// 		this.isDragging = false;
+		// 		this.state.isPlaying = false;
+		// 		this.handleProgressClick(e);
+		// 		this.playButton.innerHTML='<img src="/play.png">';
 				
-				const action = this.mixer.clipAction(this.clip);
-				action.paused = true;
-			}
-		});
+		// 		const action = this.mixer.clipAction(this.clip);
+		// 		action.paused = true;
+		// 	}
+		// });
 
-		// 在开头添加关键帧标志：一个圆中包含一个数字
-		const label = document.createElement('span');
-		label.style.cssText = `
-			position: absolute;
-			bottom: 3%;
-			left: 6%;
-			color: red;
-			font-size: 3rem;
-			transform: rotate(20deg);
-		`;
-		label.innerHTML = number;
-		this.el.appendChild(label);
+		// // 在开头添加关键帧标志：一个圆中包含一个数字
+		// const label = document.createElement('span');
+		// label.style.cssText = `
+		// 	position: absolute;
+		// 	bottom: 3%;
+		// 	left: 6%;
+		// 	color: red;
+		// 	font-size: 3rem;
+		// 	transform: rotate(20deg);
+		// `;
+		// label.innerHTML = number;
+		// this.el.appendChild(label);
 
-		this.label_circle = document.createElement('div');
-		this.label_circle.style.cssText = `
-			position: absolute;
-			bottom: 1.3%;
-			left: 2%;
-			width: 12%;
-			height: 10%;
-			border-radius: 50%;
-			background-color: transparent;
-			border: 10px outset 0xC59CF4;
-			transform: rotate(20deg) perspective(500px) rotateX(-15deg);
-			box-shadow: 
-				inset 3px 3px 8px rgba(0,0,0,0.3),
-				0 0 20px 5px rgba(128,0,128,0.4),
-				5px 5px 15px rgba(0,0,0,0.5);
-	  	`;
-		this.el.appendChild(this.label_circle);
+		// this.label_circle = document.createElement('div');
+		// this.label_circle.style.cssText = `
+		// 	position: absolute;
+		// 	bottom: 1.3%;
+		// 	left: 2%;
+		// 	width: 12%;
+		// 	height: 10%;
+		// 	border-radius: 50%;
+		// 	background-color: transparent;
+		// 	border: 10px outset 0xC59CF4;
+		// 	transform: rotate(20deg) perspective(500px) rotateX(-15deg);
+		// 	box-shadow: 
+		// 		inset 3px 3px 8px rgba(0,0,0,0.3),
+		// 		0 0 20px 5px rgba(128,0,128,0.4),
+		// 		5px 5px 15px rgba(0,0,0,0.5);
+	  	// `;
+		// this.el.appendChild(this.label_circle);
 
-		
-		// 添加播放控制按钮
+		// 播放按钮
 		this.playButton = document.createElement('div');
-		this.playButton.style.cssText=`
-			position: absolute;
-			bottom: 8%;
-			right: 3%;
-			height: 16%;
-			cursor: pointer;
-			display: flex;
-			justify-content: center;
-			align-items: center;
-		`;
-
-		this.playButton.innerHTML = '<img src="/play.png">';
-		this.playButton.addEventListener('click', () => {
-			// console.log('click');
-			this.togglePlay();
-			this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
-			this.playButton.style.display = this.activated ? 'flex' : 'none';
-		});
-
-		// 初始化时设置播放按钮状态
-		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
-		this.playButton.style.display = this.activated ? 'flex' : 'none';
-
-		this.el.appendChild(this.playButton);
+		this.setPlayButton();
 
 		this.addAxesHelper();
 		this.addGUI();
@@ -302,7 +344,6 @@ export class Viewer {
 		this.animate = this.animate.bind(this);
 		requestAnimationFrame(this.animate);
 		window.addEventListener('resize', this.resize.bind(this), false);
-		// this.togglePlay();
 
 		// 鼠标交互
 		this.mouse = new Vector2();
@@ -315,62 +356,8 @@ export class Viewer {
 		this.ground.rotation.x = -Math.PI/2;
 		this.scene.add(this.ground);
 
-		// TODO: mousehover指示
-
-		// 旋转模型
-		this.isRotating = false;
-		this.prevAngle = 0;
-		this.renderer.domElement.addEventListener('mousedown', (event) => {
-			const intersect = this.getObject(event);
-			if (intersect) {
-				const object = intersect.object;
-				const point = intersect.point;
-				if (object == this.circles[0]) {
-					this.isRotating = true;
-					this.circles[0].material.color.set(0x00ff00);
-					this.prevAngle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
-				}
-			}
-		});
-
-		this.renderer.domElement.addEventListener('mousemove', (event) => {
-			if (this.isRotating) {
-				const point = this.getObject(event).point;
-				const angle = Math.atan2(point.z - this.content.position.z, point.x - this.content.position.x);
-				this.content.rotation.y -= angle - this.prevAngle;
-				this.prevAngle = angle;
-			}
-		});
-
-		this.renderer.domElement.addEventListener('mouseup', () => {
-			this.circles[0].material.color.set(0xC59CF4);
-			this.isRotating = false;
-		});
-
-		this.renderer.domElement.addEventListener('click', (event) => {
-			const intersect = this.getObject(event);
-
-			if (intersect) {
-				const object = intersect.object;
-				const index = this.contents.indexOf(object.parent.parent);
-				console.log(index, this.activeIndex);
-				if (index !== -1) {
-					if (index === this.activeIndex) return;
-					[this.contents[index].position.z, this.contents[this.activeIndex].position.z] = 
-						[this.contents[this.activeIndex].position.z, this.contents[index].position.z];
-					// [this.labels[index].position.z, this.labels[this.activeIndex].position.z] =
-					// 	[this.labels[this.activeIndex].position.z, this.labels[index].position.z];
-					
-					// TODO: 使用动画切换模型位置
-
-					this.activeIndex = index;
-					this.clip = this.clips[this.activeIndex];
-					this.mixer = this.mixers[this.activeIndex];
-					this.content = this.contents[this.activeIndex];
-				}
-			}
-		}
-		);
+		// 点击区域激活对应的viewer
+		this.addActivate();
 	}
 
 	getObject(event) {
@@ -383,35 +370,47 @@ export class Viewer {
 		return intersects.length > 0 ? intersects[0] : null;
 	}
 
-	activate() {
-		this.activated = true;
-		this.circles.forEach((circle) => this.scene.add(circle));
-		this.playButton.style.display = 'flex';
+	addActivate() {
+		this.renderer.domElement.addEventListener('click', (event) => {
+			const intersect = this.getObject(event);
+			if (intersect) {
+				const point = intersect.point;
+				// 根据x坐标判断点击的是哪个viewer, 选择离点击位置最近的viewer
+				let min_index = 0;
+				for (let i = 1; i < this.viewers.length; i++) {
+					if (Math.abs(this.viewers[i].content.position.x - point.x) < Math.abs(this.viewers[min_index].content.position.x - point.x)) {
+						min_index = i;
+					}
+				}
+				if (this.activateView !== min_index) {
+					if (this.activateView !== null) {
+						this.viewers[this.activateView].deactivate();
+					}
+					this.activateView = min_index;
+					this.viewers[this.activateView].activate();
+				}
+			}
+		});
+	}
 
-		// 样式优化
-		this.label_circle.style.background = `
-			radial-gradient(circle at 30% 30%, 
-			rgba(255,255,255,0.3) 0%,
-			rgba(128,0,128,0.6) 60%,
-			rgba(64,0,64,0.8) 100%)
+	setPlayButton() {
+		this.playButton.style.cssText = `
+			position: absolute;
+			bottom: 8%;
+			right: 3%;
+			height: 16%;
+			cursor: pointer;
+			display: flex;
+			justify-content: center;
+			align-items: center;
 		`;
-		this.progressContainer.style.boxShadow = '0 0 5px 5px rgba(128,0,128,0.4)';
-	}
-
-	deactivate() {
-		if (this.state.isPlaying){
+		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
+		this.el.appendChild(this.playButton);
+		this.playButton.addEventListener('click', () => {
 			this.togglePlay();
-		}
-		// 清空播放进度
-		this.seekAnimation(0);
-		this.activated = false;
-		this.circles.forEach((circle) => this.scene.remove(circle));
-		this.playButton.style.display = 'none';
-
-		// 样式优化
-		this.label_circle.style.background = 'transparent';
-		this.progressContainer.style.boxShadow = 'none';
+		});
 	}
+
 
 	animate(time) {
 		requestAnimationFrame(this.animate);
@@ -420,15 +419,16 @@ export class Viewer {
 		this.controls.update();
 		this.stats.update();
 		
-		if (this.mixer) {
+		const viewer = this.viewers[this.activateView];
+
+		if (viewer.mixer) {
 			// 只在播放时更新动画时间
 			const scaledDelta = this.state.isPlaying ? dt * this.state.playbackSpeed : 0;
-			this.mixer.update(scaledDelta);
+			viewer.mixer.update(scaledDelta);
 	
 			// 更新进度条显示
-			const progress = (this.mixer.time % this.clip.duration) / this.clip.duration;
-			this.progressBar.style.width = `${progress * 100}%`;
-
+			// const progress = (viewer.mixer.time % viewer.clip.duration) / viewer.clip.duration;
+			// viewer.progressBar.style.width = `${progress * 100}%`;
 		}
 
 		this.render();
@@ -441,11 +441,10 @@ export class Viewer {
         this.seekAnimation(progress);
     }
 
-    seekAnimation(progress) {
-        const targetTime = progress * this.clip.duration;
-		// console.log(clip.duration);
-        this.mixer.setTime(targetTime);
-		const action = this.mixer.clipAction(this.clip);
+    seekAnimation(progress, viewer) {
+        const targetTime = progress * viewer.clip.duration;
+        viewer.mixer.setTime(targetTime);
+		const action = viewer.mixer.clipAction(viewer.clip);
 		action.paused = false;
     }
 
@@ -471,7 +470,7 @@ export class Viewer {
 		this.axesRenderer.setSize(this.axesDiv.clientWidth, this.axesDiv.clientHeight);
 	}
 
-	createText(text, object){
+	createText(text, object, viewer){
 		// 创建HTML元素
 		const labelDiv = document.createElement('div');
 		labelDiv.textContent = text;
@@ -485,10 +484,10 @@ export class Viewer {
 		const label = new CSS2DObject(labelDiv);
 		label.position.set(-1, 0, 0);
 		object.add(label);
-		this.labels.push(label);
+		viewer.labels.push(label);
 	}
 
-	load(url, Lf=0, Rf=100, std=true, text='') {
+	load(url, Lf=0, Rf=100, std=true, text='', posx=0, posz=0, index=0) {
 		return new Promise((resolve, reject) => {
 
 			const loader = new GLTFLoader(MANAGER)
@@ -516,9 +515,9 @@ export class Viewer {
 					}
 
 					if (std){
-						this.setContent(scene, clips, Lf, Rf, 'std');
+						this.addContent(scene, clips[0], Lf, Rf, 'std', posx, posz, index);
 					}else{
-						this.addWrongContent(scene, clips[0], -0.7, Lf, Rf, text);
+						this.addContent(scene, clips[0], Lf, Rf, text, posx, posz, index);
 					}
 
 					resolve(gltf);
@@ -529,98 +528,76 @@ export class Viewer {
 		});
 	}
 
-	addWrongContent(object, clip, offset, Lf, Rf, text) {
+	addContent(object, clip, Lf, Rf, text, posx, posz, index) {
+		if (index >= this.viewers.length) {
+			this.viewers.push(this.createViewer());
+		}
+		let viewer = this.viewers[index];
+
 		object.updateMatrixWorld();
 		const box = new Box3().setFromObject(object);
 		const size = box.getSize(new Vector3()).length();
 
 		object.rotation.y = -Math.PI / 2.0;
-		object.position.x += size * 0.3;
-		object.position.z += size * offset * (this.contents.length - 1);
-
+		object.position.x = posx;
+		object.position.z = posz;
 
 		// 绘制一条线段从上一个模型的圆心到当前模型的圆心
-		const last = this.circles[this.circles.length - 1];
-		const delta = 0.02;
-		const points = [
-			new Vector3(last.position.x, 0, last.position.z - last.geometry.parameters.outerRadius + delta),
-			new Vector3(object.position.x, 0, object.position.z + size * 0.18 - delta),
-		];
-		const line = new Line(
-			new BufferGeometry().setFromPoints(points),
-			new MeshBasicMaterial({ color: 0xC59CF4 })
-		);
-		line.material.linewidth = 6; // 设置线段宽度
-		this.circles.push(line);
+		if (viewer.circles.length > 0) {
+			const last = viewer.circles[viewer.circles.length - 1];
+			const delta = 0.02;
+			const points = [
+				new Vector3(last.position.x, 0, last.position.z - last.geometry.parameters.outerRadius + delta),
+				new Vector3(object.position.x, 0, object.position.z + size * 0.3 - delta),
+			];
+			const line = new Line(
+				new BufferGeometry().setFromPoints(points),
+				new MeshBasicMaterial({ color: 0xC59CF4 })
+			);
+			line.material.linewidth = 10; // 设置线段宽度
+			viewer.circles.push(line);
+		}
 
 		// 绘制一个小半径为size，圆心为（x, 0, z），平行于xz平面的圆环
 		const circle = new Mesh(
-			new RingGeometry(size * 0.15, size * 0.18),
+			new RingGeometry(size * 0.25, size * 0.3),
 			new MeshBasicMaterial({ color: 0xD9D9D9, side: DoubleSide, depthWrite: true }),
 		);
 		circle.rotation.x = Math.PI / 2;
 		circle.position.set(object.position.x, 0, object.position.z);
-		this.circles.push(circle);
+		viewer.circles.push(circle);
 
 		// 添加文字标签
-		this.createText(text, object);
+		this.createText(text, object, viewer);
 
 		this.scene.add(object);
-		this.contents.push(object);
+		viewer.contents.push(object);
 
 		let mixer = new AnimationMixer(object);
 		const subClip = AnimationUtils.subclip(clip, 'subClip', Lf, Rf);
 		mixer.clipAction(subClip).reset().play();
 		mixer.update(0);
-		this.mixers.push(mixer);
-		this.clips.push(subClip);
+		viewer.mixers.push(mixer);
+		viewer.clips.push(subClip);
+
+		if (viewer.contents.length === 1) {
+			viewer.clip = subClip;
+			viewer.mixer = mixer;
+			viewer.content = object;
+		}
 	}
 
-	/**
-	 * @param {THREE.Object3D} object
-	 * @param {Array<THREE.AnimationClip} clips
-	 */
-	setContent(object, clips, Lf, Rf, text) {
-		this.clear();
-
-		object.updateMatrixWorld(); // donmccurdy/three-gltf-viewer#330
-
-		const box = new Box3().setFromObject(object);
-		const size = box.getSize(new Vector3()).length();
-
-		this.controls.reset();
-
-		// 旋转模型使得人体模型面部朝向z轴正方向
-		object.rotation.y = -Math.PI / 2.0;
-		object.position.x += size * 0.3;
-		object.position.z += size * 0.6;
-
-		// 绘制一个小半径为size，圆心为（x, 0, z），平行于xz平面的圆环
-		const circle = new Mesh(
-			new RingGeometry(size * 0.25, size * 0.28),
-			new MeshBasicMaterial({ color: 0xC59CF4, side: DoubleSide, depthWrite: true }),
-		);
-		circle.rotation.x = Math.PI / 2;
-		circle.position.set(object.position.x, 0, object.position.z);
-		this.circles.push(circle);
-
-		// 添加文字标签
-		this.createText(text, object);
-
-		this.controls.maxDistance = size * 10;
-		this.defaultCamera.position.set(0, 0, size * 2.5);
-		this.defaultCamera.near = size / 100;
-		this.defaultCamera.far = size * 100;
+	setDefaultCamera(x, y, z, center_x, center_y, center_z, near=0.1, far=100) {
+		this.defaultCamera.position.set(x, y, z);
+		this.defaultCamera.near = near;
+		this.defaultCamera.far = far;
 		this.defaultCamera.updateProjectionMatrix();
 
 		if (this.options.cameraPosition) {
 			this.defaultCamera.position.fromArray(this.options.cameraPosition);
 			this.defaultCamera.lookAt(new Vector3());
 		} else {
-			this.defaultCamera.position.x = size;
-			this.defaultCamera.position.y = size * 0.5;
-			this.defaultCamera.position.z = size * 1.2;
-			const center = new Vector3(size * 0.2, size * 0.4, -size * 0.5);
+			const center = new Vector3(center_x, center_y, center_z);
 			this.defaultCamera.lookAt(center);
 		}
 
@@ -628,36 +605,15 @@ export class Viewer {
 
 		this.axesCamera.position.copy(this.defaultCamera.position);
 		this.axesCamera.lookAt(this.axesScene.position);
-		this.axesCamera.near = size / 100;
-		this.axesCamera.far = size * 100;
+		this.axesCamera.near = near;
+		this.axesCamera.far = far;
 		this.axesCamera.updateProjectionMatrix();
-		this.axesCorner.scale.set(size, size, size);
+		// this.axesCorner.scale.set(size, size, size);
 
 		this.controls.saveState();
 		this.controls.enabled = false;
-
-		this.scene.add(object);
-		this.content = object;
-		this.contents.push(object);
-
-		this.state.punctualLights = true;
-
-		this.content.traverse((node) => {
-			if (node.isLight) {
-				this.state.punctualLights = false;
-			}
-		});
-
-		this.setClips(clips, Lf, Rf);
-
-		this.updateLights();
-		this.updateGUI();
 		this.updateEnvironment();
-		this.updateDisplay();
-
-		window.VIEWER.scene = this.content;
-
-		this.printGraph(this.content);
+		this.updateLights();
 	}
 
 	printGraph(node) {
@@ -666,34 +622,12 @@ export class Viewer {
 		console.groupEnd();
 	}
 
-	/**
-	 * @param {Array<THREE.AnimationClip} clips
-	 */
-	setClips(clips, Lf, Rf) {
-		if (this.mixer) {
-			this.mixer.stopAllAction();
-			this.mixer.uncacheRoot(this.mixer.getRoot());
-			this.mixer = null;
-		}
-
-		this.clip = AnimationUtils.subclip(clips[0], 'subClip', Lf, Rf);
-		this.clips.push(this.clip);
-
-		this.mixer = new AnimationMixer(this.content);
-		this.mixer.clipAction(this.clip).reset().play();
-		this.togglePlay();
-
-		this.mixers.push(this.mixer);
-	}
-
 	// 新增动画控制方法
 	togglePlay() {
+		const viewer = this.viewers[this.activateView];
 		this.state.isPlaying = !this.state.isPlaying;
-		// 控制播放按钮可见性
 		this.playButton.innerHTML = this.state.isPlaying ? '<img src="/pause.png">' : '<img src="/play.png">';
-		this.playButton.style.display = this.activated ? 'flex' : 'none';
-		console.log(this.mixer);
-		const action = this.mixer.clipAction(this.clip);
+		const action = viewer.mixer.clipAction(viewer.clip);
 		action.paused = !this.state.isPlaying;
 	}
 
@@ -844,10 +778,6 @@ export class Viewer {
 		}
 
 		this.controls.autoRotate = this.state.autoRotate;
-	}
-
-	updateBackground() {
-		this.backgroundColor.set(this.state.bgColor);
 	}
 
 	/**

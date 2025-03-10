@@ -1,8 +1,5 @@
 import WebGL from 'three/addons/capabilities/WebGL.js';
 import { Viewer } from './viewer.js';
-import { SimpleDropzone } from 'simple-dropzone';
-import { Validator } from './validator.js';
-import { Footer } from './components/footer';
 import queryString from 'query-string';
 
 window.VIEWER = {};
@@ -28,8 +25,8 @@ class App {
 		};
 
 		this.el = el;
-		this.viewers = null;
-		this.viewerEls = null;
+		this.viewer = null;
+		this.viewerEl = null;
 		this.wrapperEl = el.querySelector('.wrap');
 		this.activateIndex = null;
 
@@ -47,39 +44,18 @@ class App {
 		this.view();
 	}
 
-	activate(index) {
-		if (index === this.activateIndex) return;
-		if (this.activateIndex !== null) {
-			this.viewers[this.activateIndex].deactivate();
-		}
-		this.activateIndex = index;
-		this.viewers[index].activate();
-	}
-
 	/**
 	 * Sets up the view manager.
 	 * @return {Viewer}
 	 */
-	createViewers(num_keyframes) {
-		// 创建num_keyframes个viewer
-		this.viewerEls = [];
-		this.viewers = [];
-		for (let i = 0; i < num_keyframes; i++) {
-			const viewerEl = document.createElement('div');
-			viewerEl.style.cssText = `
-				width: ${100 / num_keyframes}%;
-				height: 100%;
-				left: ${100 / num_keyframes * i}%;
-			`;
-			viewerEl.classList.add('viewer');
-			viewerEl.addEventListener('mousedown', () => {
-				this.activate(i);
-			});
-			this.wrapperEl.appendChild(viewerEl);
-			this.viewerEls.push(viewerEl);
-			this.viewers.push(new Viewer(viewerEl, this.options, i + 1));
-		}
-		return this.viewers;
+	createViewer() {
+		const viewerEl = document.createElement('div');
+		viewerEl.style.cssText = 'width: 100%; height: 100%;';
+		viewerEl.classList.add('viewer');
+		this.wrapperEl.appendChild(viewerEl);
+		this.viewerEl = viewerEl;
+		this.viewer = new Viewer(viewerEl, this.options);
+		return this.viewer;
 	}
 
 	/**
@@ -89,29 +65,32 @@ class App {
 	 * @param  {Map<string, File>} fileMap
 	 */
 	view() {
-		if (this.viewers) {
-			this.viewers.forEach((viewer) => viewer.clear());
-			this.viewers = null;
+		if (this.viewer) {
+			this.viewer.clear();
+			this.viewer = null;
 		}
-		const viewers = this.viewers || this.createViewers(3);
+		this.viewer = this.viewer || this.createViewer();
 
 		// 加载参考模型
-		let keyFrames = [0, 62, 91, 123];
+		let keyFrames = [0, 62, 91, 122, 123];
 		let texts = [];
-		for (let i = 0; i < viewers.length; i++) {
-			viewers[i].load("/ref.glb", keyFrames[i], keyFrames[i + 1], true);
+		let posx = [-4.5, -1.5, 1.5, 4.5];
+		let posz = [0, 0, 0, 0];
+		for (let i = 0; i < keyFrames.length - 1; i++) {
+			this.viewer.load("/ref.glb", keyFrames[i], keyFrames[i + 1], true, '', posx[i], posz[i], i);
 		}
 
 		// 加载用户模型
-		keyFrames = [0, 97, 134, 165];
-		texts = ['start', 'ready', 'lowest'];		
-		for (let i = 0; i < viewers.length; i++) {
-			viewers[i].load("/clq_bind_v5.glb", keyFrames[i], keyFrames[i + 1], false, texts[i]);
+		keyFrames = [0, 97, 134, 164, 165];
+		texts = ['start', 'ready', 'lowest', 'end'];
+		posz = [-3, -3, -3, -3];		
+		for (let i = 0; i < keyFrames.length - 1; i++) {
+			this.viewer.load("/clq_bind_v5.glb", keyFrames[i], keyFrames[i + 1], false, texts[i], posx[i], posz[i], i);
 		}
+
+		this.viewer.setDefaultCamera(0, 0.5, 4, 0, 0, 0);
 	}
 }
-
-document.body.innerHTML += Footer();
 
 document.addEventListener('DOMContentLoaded', () => {
 	const app = new App(document.body, location);
